@@ -15,6 +15,7 @@ os.environ['PYTHONUNBUFFERED'] = '1'
 from config import Config
 from exchanges.bybit_client import BybitClient
 from strategies.ma_strategy import MAStrategy
+from strategies.session_aware_strategy import SessionAwareStrategy
 from notifications.telegram_bot import TelegramNotifier
 from utils.chart_generator import ChartGenerator
 
@@ -46,8 +47,14 @@ class TradingBot:
         
         try:
             print("Initializing strategy...", flush=True)
-            self.strategy = MAStrategy(fast_period=20, slow_period=50)
-            print("✓ Strategy initialized", flush=True)
+            # Initialize SessionAwareStrategy with default parameters
+            self.strategy = SessionAwareStrategy(
+                ema_fast=Config.STRATEGY_EMA_FAST,
+                ema_medium=Config.STRATEGY_EMA_MEDIUM,
+                ema_slow=Config.STRATEGY_EMA_SLOW,
+                signal_threshold=Config.STRATEGY_SIGNAL_THRESHOLD
+            )
+            print("✓ SessionAwareStrategy initialized", flush=True)
         except Exception as e:
             print(f"✗ Failed to initialize strategy: {e}", flush=True)
             traceback.print_exc()
@@ -125,9 +132,9 @@ class TradingBot:
                         entry_price = float(pos.get('avgPrice', 0))
                         side = 'Buy' if size > 0 else 'Sell'
                         
-                        # Calculate TP/SL
+                        # Calculate TP/SL (SessionAware uses dynamic ATR-based TP/SL)
                         tp_sl = self.strategy.calculate_tp_sl(
-                            entry_price, side, tp_percent=1.0, sl_percent=1.0
+                            entry_price, side
                         )
                         
                         # Set TP/SL on Bybit if not already set
@@ -322,8 +329,8 @@ class TradingBot:
             balance_info = self.client.get_wallet_balance()
             try:
                 available_balance = float(balance_info['list'][0]['coin'][0]['availableToWithdraw'])
-                # Use smaller percentage per coin when trading multiple coins
-                position_value = available_balance * 0.05 * self.leverage  # 5% per coin
+                # Use configured percentage per position (matches backtest: 20%)
+                position_value = available_balance * Config.POSITION_SIZE_PCT * self.leverage
                 calculated_qty = position_value / entry_price
             except:
                 # Fallback: calculate based on minimum order value
@@ -389,9 +396,11 @@ class TradingBot:
             # Wait a moment for position to be registered
             time.sleep(1)
             
-            # Calculate TP/SL
+            # Calculate TP/SL using ATR and session data from signal
+            atr_pct = signal_data.get('atr_pct')
+            session = signal_data.get('session')
             tp_sl = self.strategy.calculate_tp_sl(
-                entry_price, side, tp_percent=1.0, sl_percent=1.0
+                entry_price, side, atr_pct=atr_pct, session=session
             )
             
             # Get current position
@@ -421,9 +430,15 @@ class TradingBot:
             entry_df = self.strategy.add_indicators(df)
             chart_path = self.chart_generator.generate_entry_chart(
                 entry_df, entry_price, tp_sl['tp_price'], tp_sl['sl_price'],
-                signal_data.get('ma_fast', 0), signal_data.get('ma_slow', 0),
+                signal_data.get('ema_fast', 0), signal_data.get('ema_slow', 0),
                 symbol, side, self.leverage
             )
+            
+            # Prepare notification message with SessionAware details
+            session_info = f"\n🌍 Session: {signal_data.get('session', 'unknown').upper()}"
+            signal_strength_info = f"\n📊 Signal Strength: {signal_data.get('signal_strength', 0):.2%}"
+            rsi_info = f"\n📈 RSI: {signal_data.get('rsi', 0):.1f}"
+            extra_info = session_info + signal_strength_info + rsi_info
             
             # Send notification
             self.notifier.send_entry_sync(
@@ -487,41 +502,46 @@ class TradingBot:
                 else:
                     print("   ➡️ No signals detected - showing detailed analysis...", flush=True)
                     
+                    # Get current session
+                    current_session = self.strategy.get_session()
+                    print(f"   📅 Current Session: {current_session.upper()}", flush=True)
+                    
                     # Show detailed status for first few coins
                     for i, symbol in enumerate(self.trending_coins[:5]):
                         try:
                             df = self.client.get_kline(symbol, self.interval, limit=200)
-                            df_with_ma = self.strategy.add_indicators(df)
-                            current = df_with_ma.iloc[-1]
-                            previous = df_with_ma.iloc[-2]
+                            df_with_indicators = self.strategy.add_indicators(df)
+                            current = df_with_indicators.iloc[-1]
                             
-                            if not pd.isna(current['ma_fast']) and not pd.isna(current['ma_slow']):
-                                ma_status = "FAST>SLOW" if current['ma_fast'] > current['ma_slow'] else "SLOW>FAST"
-                                ma_distance = abs(current['ma_fast'] - current['ma_slow']) / current['ma_slow'] * 100
-                                price_vs_fast = "ABOVE" if current['close'] > current['ma_fast'] else "BELOW"
-                                price_vs_slow = "ABOVE" if current['close'] > current['ma_slow'] else "BELOW"
+                            # Get session parameters
+                            session_params = self.strategy.get_session_parameters(current_session)
+                            
+                            # Calculate signal strengths
+                            long_strength, short_strength = self.strategy.calculate_signal_strength(
+                                df_with_indicators, session_params
+                            )
+                            
+                            if not pd.isna(current['ema_fast']) and not pd.isna(current['ema_slow']):
+                                # EMA alignment
+                                ema_trend = ""
+                                if current['ema_fast'] > current['ema_medium'] > current['ema_slow']:
+                                    ema_trend = "BULLISH"
+                                elif current['ema_fast'] < current['ema_medium'] < current['ema_slow']:
+                                    ema_trend = "BEARISH"
+                                else:
+                                    ema_trend = "MIXED"
                                 
-                                # Check if fast MA is rising or falling
-                                fast_trend = ""
-                                if len(df_with_ma) >= 3:
-                                    prev2_fast = df_with_ma.iloc[-3]['ma_fast']
-                                    if current['ma_fast'] > prev2_fast:
-                                        fast_trend = "RISING"
-                                    elif current['ma_fast'] < prev2_fast:
-                                        fast_trend = "FALLING"
-                                    else:
-                                        fast_trend = "FLAT"
+                                # Signal strength indicator
+                                signal_str = ""
+                                if long_strength > self.strategy.signal_threshold:
+                                    signal_str = f" [LONG:{long_strength:.2f}🟢]"
+                                elif short_strength > self.strategy.signal_threshold:
+                                    signal_str = f" [SHORT:{short_strength:.2f}🔴]"
+                                else:
+                                    max_strength = max(long_strength, short_strength)
+                                    signal_str = f" [MAX:{max_strength:.2f}⚪]"
                                 
-                                # Check crossover status
-                                prev_fast_above = previous['ma_fast'] > previous['ma_slow']
-                                curr_fast_above = current['ma_fast'] > current['ma_slow']
-                                crossover_status = ""
-                                if not prev_fast_above and curr_fast_above:
-                                    crossover_status = " [BULLISH CROSSOVER!]"
-                                elif prev_fast_above and not curr_fast_above:
-                                    crossover_status = " [BEARISH CROSSOVER!]"
-                                
-                                print(f"   {symbol}: {ma_status} (dist:{ma_distance:.2f}%) | Price ${current['close']:.2f} ({price_vs_fast} MA-Fast, {price_vs_slow} MA-Slow) | Fast MA: {fast_trend}{crossover_status}", flush=True)
+                                print(f"   {symbol}: ${current['close']:.2f} | EMA:{ema_trend} | RSI:{current['rsi']:.1f} | VOL:{current['volume_ratio']:.2f}x{signal_str}", flush=True)
                         except Exception as e:
                             print(f"   {symbol}: Error - {e}", flush=True)
                 
