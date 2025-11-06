@@ -132,15 +132,29 @@ Bot is running and monitoring the market.
         """Handle button callback queries."""
         query = update.callback_query
         
-        # Answer callback immediately to prevent timeout
-        await query.answer("⏳ Generating analysis...")
-        
         # Check if message is from authorized chat
         if str(query.message.chat.id) != str(self.chat_id):
-            await query.edit_message_text("❌ Unauthorized access.")
+            await query.answer("❌ Unauthorized access.", show_alert=True)
             return
         
         try:
+            # Handle status button callback
+            if query.data == "status":
+                # Answer callback immediately
+                await query.answer("⏳ Generating status report...")
+                
+                # Create a fake Update object to reuse status_command logic
+                # We'll call status_command directly with modified update
+                fake_update = Update(
+                    update_id=update.update_id,
+                    message=query.message
+                )
+                await self.status_command(fake_update, context)
+                return
+            
+            # Answer callback immediately to prevent timeout
+            await query.answer("⏳ Generating analysis...")
+            
             # Show typing indicator
             await context.bot.send_chat_action(
                 chat_id=query.message.chat.id,

@@ -1,5 +1,5 @@
 """Telegram notification handler."""
-from telegram import Bot
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import TelegramError
 import asyncio
 import os
@@ -32,20 +32,21 @@ class TelegramNotifier:
             # Don't close the loop, just let it be reused
             pass
     
-    async def send_message(self, message: str):
+    async def send_message(self, message: str, reply_markup=None):
         """Send text message to Telegram."""
         try:
             await self.bot.send_message(
                 chat_id=self.chat_id,
                 text=message,
-                parse_mode='HTML'
+                parse_mode='HTML',
+                reply_markup=reply_markup
             )
             return True
         except TelegramError as e:
             print(f"Error sending Telegram message: {e}")
             return False
     
-    async def send_photo(self, photo_path: str, caption: str = None):
+    async def send_photo(self, photo_path: str, caption: str = None, reply_markup=None):
         """Send photo with caption to Telegram."""
         try:
             with open(photo_path, 'rb') as photo:
@@ -53,7 +54,8 @@ class TelegramNotifier:
                     chat_id=self.chat_id,
                     photo=photo,
                     caption=caption,
-                    parse_mode='HTML'
+                    parse_mode='HTML',
+                    reply_markup=reply_markup
                 )
             
             # Clean up image file after sending
@@ -67,6 +69,11 @@ class TelegramNotifier:
         except FileNotFoundError:
             print(f"Photo file not found: {photo_path}")
             return False
+    
+    def _create_status_button(self):
+        """Create inline keyboard button for /status command."""
+        keyboard = [[InlineKeyboardButton("📊 Status", callback_data="status")]]
+        return InlineKeyboardMarkup(keyboard)
     
     async def notify_entry(self, symbol: str, side: str, entry_price: float,
                           tp_price: float, sl_price: float, leverage: int,
@@ -85,7 +92,8 @@ class TelegramNotifier:
 Chart analysis attached below.
 """
         
-        await self.send_photo(chart_path, caption=message)
+        reply_markup = self._create_status_button()
+        await self.send_photo(chart_path, caption=message, reply_markup=reply_markup)
     
     async def notify_exit(self, symbol: str, side: str, entry_price: float,
                          exit_price: float, tp_price: float, sl_price: float,
@@ -110,7 +118,8 @@ Chart analysis attached below.
 Chart analysis attached below.
 """
         
-        await self.send_photo(chart_path, caption=message)
+        reply_markup = self._create_status_button()
+        await self.send_photo(chart_path, caption=message, reply_markup=reply_markup)
     
     async def notify_error(self, error_message: str):
         """Send error notification."""
@@ -121,7 +130,8 @@ Chart analysis attached below.
 
 Please check the bot logs for more details.
 """
-        await self.send_message(message)
+        reply_markup = self._create_status_button()
+        await self.send_message(message, reply_markup=reply_markup)
     
     def send_entry_sync(self, symbol: str, side: str, entry_price: float,
                        tp_price: float, sl_price: float, leverage: int,
