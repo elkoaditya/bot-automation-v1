@@ -81,6 +81,10 @@ class TradingBot:
         self.leverage = Config.LEVERAGE
         self.interval = str(Config.INTERVAL)
         
+        # Fixed TP/SL (matching backtest config)
+        self.stop_loss_pct = 0.025   # 2.5% stop loss (matches backtest)
+        self.take_profit_pct = 0.05  # 5.0% take profit (matches backtest)
+        
         # Multi-coin tracking
         self.trending_coins = []
         self.positions = {}  # {symbol: position_data}
@@ -90,6 +94,33 @@ class TradingBot:
         print(f"  Leverage: {self.leverage}x", flush=True)
         print(f"  Interval: {self.interval}m", flush=True)
         print(f"  Environment: {Config.ENVIRONMENT}", flush=True)
+        print(f"  Stop Loss: {self.stop_loss_pct*100}%", flush=True)
+        print(f"  Take Profit: {self.take_profit_pct*100}%", flush=True)
+    
+    def calculate_fixed_tp_sl(self, entry_price: float, side: str):
+        """
+        Calculate fixed TP/SL (matching backtest config)
+        
+        Args:
+            entry_price: Entry price
+            side: 'Buy' or 'Sell'
+        
+        Returns:
+            Dictionary with tp_price and sl_price
+        """
+        if side == 'Buy':
+            tp_price = entry_price * (1 + self.take_profit_pct)
+            sl_price = entry_price * (1 - self.stop_loss_pct)
+        else:  # Sell
+            tp_price = entry_price * (1 - self.take_profit_pct)
+            sl_price = entry_price * (1 + self.stop_loss_pct)
+        
+        return {
+            'tp_price': round(tp_price, 8),
+            'sl_price': round(sl_price, 8),
+            'tp_percent': self.take_profit_pct * 100,
+            'sl_percent': self.stop_loss_pct * 100
+        }
     
     def get_trending_coins(self):
         """Get top 10 trending coins."""
@@ -132,10 +163,8 @@ class TradingBot:
                         entry_price = float(pos.get('avgPrice', 0))
                         side = 'Buy' if size > 0 else 'Sell'
                         
-                        # Calculate TP/SL (SessionAware uses dynamic ATR-based TP/SL)
-                        tp_sl = self.strategy.calculate_tp_sl(
-                            entry_price, side
-                        )
+                        # Calculate fixed TP/SL (matching backtest)
+                        tp_sl = self.calculate_fixed_tp_sl(entry_price, side)
                         
                         # Set TP/SL on Bybit if not already set
                         try:
@@ -396,12 +425,8 @@ class TradingBot:
             # Wait a moment for position to be registered
             time.sleep(1)
             
-            # Calculate TP/SL using ATR and session data from signal
-            atr_pct = signal_data.get('atr_pct')
-            session = signal_data.get('session')
-            tp_sl = self.strategy.calculate_tp_sl(
-                entry_price, side, atr_pct=atr_pct, session=session
-            )
+            # Calculate fixed TP/SL (matching backtest)
+            tp_sl = self.calculate_fixed_tp_sl(entry_price, side)
             
             # Get current position
             positions = self.client.get_positions(symbol)
@@ -433,12 +458,6 @@ class TradingBot:
                 signal_data.get('ema_fast', 0), signal_data.get('ema_slow', 0),
                 symbol, side, self.leverage
             )
-            
-            # Prepare notification message with SessionAware details
-            session_info = f"\n🌍 Session: {signal_data.get('session', 'unknown').upper()}"
-            signal_strength_info = f"\n📊 Signal Strength: {signal_data.get('signal_strength', 0):.2%}"
-            rsi_info = f"\n📈 RSI: {signal_data.get('rsi', 0):.1f}"
-            extra_info = session_info + signal_strength_info + rsi_info
             
             # Send notification
             self.notifier.send_entry_sync(
