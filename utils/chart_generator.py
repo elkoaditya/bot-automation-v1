@@ -183,6 +183,117 @@ class ChartGenerator:
         
         return filepath
     
+    def generate_analysis_chart(self, df: pd.DataFrame, symbol: str, 
+                               current_price: float, ema_fast: float, 
+                               ema_medium: float, ema_slow: float,
+                               rsi: float, bb_upper: float, bb_middle: float, 
+                               bb_lower: float, long_strength: float, 
+                               short_strength: float, session: str):
+        """
+        Generate analysis chart with all strategy indicators.
+        
+        Args:
+            df: DataFrame with OHLCV and indicators
+            symbol: Trading pair symbol
+            current_price: Current price
+            ema_fast: Fast EMA value
+            ema_medium: Medium EMA value
+            ema_slow: Slow EMA value
+            rsi: RSI value
+            bb_upper: Bollinger Band upper
+            bb_middle: Bollinger Band middle
+            bb_lower: Bollinger Band lower
+            long_strength: Long signal strength
+            short_strength: Short signal strength
+            session: Current session name
+        
+        Returns:
+            Path to saved chart image
+        """
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), 
+                                       gridspec_kw={'height_ratios': [3, 1]})
+        
+        # Use last 100 candles
+        plot_df = df.tail(100).copy()
+        
+        # Plot candlestick on main chart
+        self._plot_candlestick(ax1, plot_df)
+        
+        # Plot EMA lines
+        if 'ema_fast' in plot_df.columns:
+            ax1.plot(plot_df['timestamp'], plot_df['ema_fast'], 
+                    label='EMA Fast (8)', color='blue', linewidth=1.5, alpha=0.8)
+        if 'ema_medium' in plot_df.columns:
+            ax1.plot(plot_df['timestamp'], plot_df['ema_medium'], 
+                    label='EMA Medium (21)', color='orange', linewidth=1.5, alpha=0.8)
+        if 'ema_slow' in plot_df.columns:
+            ax1.plot(plot_df['timestamp'], plot_df['ema_slow'], 
+                    label='EMA Slow (50)', color='red', linewidth=1.5, alpha=0.8)
+        
+        # Plot Bollinger Bands
+        if 'bb_upper' in plot_df.columns:
+            ax1.plot(plot_df['timestamp'], plot_df['bb_upper'], 
+                    label='BB Upper', color='gray', linestyle='--', linewidth=1, alpha=0.6)
+            ax1.plot(plot_df['timestamp'], plot_df['bb_middle'], 
+                    label='BB Middle', color='gray', linestyle='-', linewidth=1, alpha=0.4)
+            ax1.plot(plot_df['timestamp'], plot_df['bb_lower'], 
+                    label='BB Lower', color='gray', linestyle='--', linewidth=1, alpha=0.6)
+            ax1.fill_between(plot_df['timestamp'], plot_df['bb_upper'], plot_df['bb_lower'], 
+                           alpha=0.1, color='gray')
+        
+        # Plot current price line
+        last_timestamp = plot_df['timestamp'].iloc[-1]
+        ax1.axhline(y=current_price, color='purple', linestyle='-', 
+                   linewidth=2, label=f'Current: ${current_price:.2f}', alpha=0.8)
+        
+        # Format main chart
+        max_strength = max(long_strength, short_strength)
+        signal_text = ""
+        if long_strength > 0.70:
+            signal_text = f"LONG {int(long_strength*100)}%"
+        elif short_strength > 0.70:
+            signal_text = f"SHORT {int(short_strength*100)}%"
+        else:
+            signal_text = f"CONF {int(max_strength*100)}%"
+        
+        ax1.set_title(f'{symbol} - Analysis | {session.upper()} Session | Signal: {signal_text}', 
+                     fontsize=16, fontweight='bold', pad=20)
+        ax1.set_ylabel('Price (USDT)', fontsize=12)
+        ax1.legend(loc='best', fontsize=9, ncol=2)
+        ax1.grid(True, alpha=0.3)
+        
+        # Plot RSI on subplot
+        if 'rsi' in plot_df.columns:
+            ax2.plot(plot_df['timestamp'], plot_df['rsi'], 
+                    label='RSI', color='purple', linewidth=1.5)
+            ax2.axhline(y=70, color='red', linestyle='--', linewidth=1, alpha=0.5, label='Overbought')
+            ax2.axhline(y=30, color='green', linestyle='--', linewidth=1, alpha=0.5, label='Oversold')
+            ax2.axhline(y=50, color='gray', linestyle=':', linewidth=0.5, alpha=0.3)
+            ax2.fill_between(plot_df['timestamp'], 70, 100, alpha=0.1, color='red')
+            ax2.fill_between(plot_df['timestamp'], 0, 30, alpha=0.1, color='green')
+        
+        ax2.set_ylabel('RSI', fontsize=12)
+        ax2.set_xlabel('Time', fontsize=12)
+        ax2.set_ylim(0, 100)
+        ax2.legend(loc='best', fontsize=9)
+        ax2.grid(True, alpha=0.3)
+        
+        # Format x-axis dates
+        for ax in [ax1, ax2]:
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M'))
+            plt.setp(ax.xaxis.get_majorticklabels(), rotation=45)
+        
+        plt.tight_layout()
+        
+        # Save chart
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f'{symbol}_analysis_{timestamp}.png'
+        filepath = os.path.join(self.output_dir, filename)
+        plt.savefig(filepath, dpi=150, bbox_inches='tight')
+        plt.close()
+        
+        return filepath
+    
     def _plot_candlestick(self, ax, df: pd.DataFrame):
         """Plot candlestick chart."""
         for idx, row in df.iterrows():

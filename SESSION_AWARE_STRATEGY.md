@@ -211,7 +211,7 @@ STRATEGY_EMA_SLOW=100
 2. **Monitor First Week**: Observe signal quality before scaling
 3. **Use Appropriate Leverage**: 5x is safer than 10x
 4. **Set Daily Loss Limits**: Stop trading if daily loss exceeds X%
-5. **Diversify**: Trade multiple coins (bot default: top 10)
+5. **Diversify**: Trade multiple coins (bot default: top 20)
 6. **Track Performance**: Keep log of trades and metrics
 
 ## 🔍 Monitoring

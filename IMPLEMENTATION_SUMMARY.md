@@ -260,7 +260,7 @@ Bot Directory
 2. **Session Selection**: You can modify bot to trade only during best-performing session
 3. **Volume Filter**: Low volume = fewer signals (this is intentional, not a bug)
 4. **Signal Threshold**: 0.70 is good balance; adjust based on your risk tolerance
-5. **Multiple Coins**: Bot analyzes top 10 coins in parallel for diversification
+5. **Multiple Coins**: Bot analyzes top 20 coins in parallel for diversification
 
 ## 🆘 Support & Troubleshooting
 

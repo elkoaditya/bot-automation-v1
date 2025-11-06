@@ -145,6 +145,7 @@ class BybitClient:
             
             bybit_interval = interval_map.get(str(interval), '15')
             
+            # Add timeout for API call
             response = self.market_client.get_kline(
                 category="linear",
                 symbol=symbol,
@@ -228,12 +229,12 @@ class BybitClient:
                 return 0.01, 0.01, 5.0
             return 0.001, 0.001, 5.0
     
-    def get_top_trending_coins(self, limit: int = 10):
+    def get_top_trending_coins(self, limit: int = 20):
         """
         Get top trending coins by 24h volume.
         
         Args:
-            limit: Number of top coins to return (default: 10)
+            limit: Number of top coins to return (default: 20)
         
         Returns:
             List of symbol strings (e.g., ['BTCUSDT', 'ETHUSDT', ...])

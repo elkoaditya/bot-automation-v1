@@ -11,7 +11,7 @@ Bot trading otomatis dengan leverage menggunakan Bybit API demo untuk trading da
 - 🤖 Demo mode menggunakan Bybit demo API (`https://api-demo.bybit.com`)
 - 📈 Real market data untuk candlestick (bukan testnet)
 - 💬 Notifikasi Telegram dengan chart visualisasi posisi entry, TP, dan SL
-- 🔄 Multi-coin trading (top 10 trending coins by volume)
+- 🔄 Multi-coin trading (top 20 trending coins by volume)
 - 🛡️ Session-specific risk management (R:R ratio 1.5:1 to 2.5:1)
 
 ## Setup

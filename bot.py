@@ -17,6 +17,7 @@ from exchanges.bybit_client import BybitClient
 from strategies.ma_strategy import MAStrategy
 from strategies.session_aware_strategy import SessionAwareStrategy
 from notifications.telegram_bot import TelegramNotifier
+from notifications.telegram_command_handler import TelegramCommandHandler
 from utils.chart_generator import ChartGenerator
 
 
@@ -78,6 +79,15 @@ class TradingBot:
             traceback.print_exc()
             sys.exit(1)
         
+        try:
+            print("Initializing Telegram command handler...", flush=True)
+            self.command_handler = TelegramCommandHandler(self)
+            print("✓ Telegram command handler initialized", flush=True)
+        except Exception as e:
+            print(f"✗ Failed to initialize Telegram command handler: {e}", flush=True)
+            traceback.print_exc()
+            sys.exit(1)
+        
         self.leverage = Config.LEVERAGE
         self.interval = str(Config.INTERVAL)
         
@@ -123,10 +133,10 @@ class TradingBot:
         }
     
     def get_trending_coins(self):
-        """Get top 10 trending coins."""
+        """Get top 20 trending coins."""
         try:
-            print("📊 Fetching top 10 trending coins...", flush=True)
-            coins = self.client.get_top_trending_coins(limit=10)
+            print("📊 Fetching top 20 trending coins...", flush=True)
+            coins = self.client.get_top_trending_coins(limit=20)
             print(f"✓ Found {len(coins)} trending coins: {', '.join(coins)}", flush=True)
             return coins
         except Exception as e:
@@ -280,6 +290,340 @@ class TradingBot:
         
         with ThreadPoolExecutor(max_workers=len(symbols)) as executor:
             executor.map(self.monitor_position_coin, symbols)
+    
+    def get_status_report(self, html_format=True):
+        """
+        Generate status report with modern Telegram formatting.
+        
+        Args:
+            html_format: If True, return HTML formatted message (default: True)
+        
+        Returns:
+            String containing formatted status report
+        """
+        try:
+            # Get trending coins if not already set
+            if not self.trending_coins:
+                self.trending_coins = self.get_trending_coins()
+            
+            # Get current session
+            current_session = self.strategy.get_session()
+            
+            # Session emoji mapping
+            session_emoji = {
+                'asian': '🌏',
+                'european': '🇪🇺',
+                'us': '🇺🇸'
+            }
+            session_emoji_icon = session_emoji.get(current_session.lower(), '📅')
+            
+            if html_format:
+                # Modern HTML formatted message
+                lines = []
+                
+                # Compact header
+                lines.append("╔══════════════════════╗")
+                lines.append(f"║ 🤖 <b>BOT STATUS</b> ║")
+                lines.append("╚══════════════════════╝")
+                lines.append("")
+                lines.append(f"📊 {session_emoji_icon} {current_session.upper()} • 🎯 {int(self.strategy.signal_threshold*100)}% • 📈 {len(self.trending_coins)} coins")
+                lines.append("")
+                
+                # Coin analysis - collect data with confidence for sorting
+                coin_data_list = []
+                for symbol in self.trending_coins:
+                    try:
+                        df = self.client.get_kline(symbol, self.interval, limit=200)
+                        df_with_indicators = self.strategy.add_indicators(df)
+                        current = df_with_indicators.iloc[-1]
+                        
+                        session_params = self.strategy.get_session_parameters(current_session)
+                        long_strength, short_strength = self.strategy.calculate_signal_strength(
+                            df_with_indicators, session_params
+                        )
+                        
+                        if not pd.isna(current['ema_fast']) and not pd.isna(current['ema_slow']):
+                            # EMA trend with better visual
+                            if current['ema_fast'] > current['ema_medium'] > current['ema_slow']:
+                                ema_icon = "📈"
+                                ema_text = "BULLISH"
+                                ema_color = "🟢"
+                            elif current['ema_fast'] < current['ema_medium'] < current['ema_slow']:
+                                ema_icon = "📉"
+                                ema_text = "BEARISH"
+                                ema_color = "🔴"
+                            else:
+                                ema_icon = "➡️"
+                                ema_text = "MIXED"
+                                ema_color = "⚪"
+                            
+                            # Price formatting
+                            price = current['close']
+                            if price >= 1000:
+                                price_str = f"${price:,.0f}"
+                            elif price >= 1:
+                                price_str = f"${price:.2f}"
+                            else:
+                                price_str = f"${price:.4f}"
+                            
+                            # RSI with visual indicator
+                            rsi = current['rsi']
+                            if rsi > 70:
+                                rsi_icon = "🔴"
+                            elif rsi < 30:
+                                rsi_icon = "🟢"
+                            else:
+                                rsi_icon = "⚪"
+                            
+                            # Volume indicator
+                            vol_ratio = current['volume_ratio']
+                            if vol_ratio > 1.5:
+                                vol_icon = "🔥"
+                            elif vol_ratio < 0.5:
+                                vol_icon = "💤"
+                            else:
+                                vol_icon = "📊"
+                            
+                            # Signal strength with modern visual
+                            max_strength = max(long_strength, short_strength)
+                            threshold = self.strategy.signal_threshold
+                            
+                            if long_strength > threshold:
+                                signal_icon = "🚀"
+                                signal_text = f"LONG {int(long_strength*100)}%"
+                                bar_length = min(int((long_strength * 8)), 8)
+                                signal_bar = "█" * bar_length + "░" * (8 - bar_length)
+                            elif short_strength > threshold:
+                                signal_icon = "⬇️"
+                                signal_text = f"SHORT {int(short_strength*100)}%"
+                                bar_length = min(int((short_strength * 8)), 8)
+                                signal_bar = "█" * bar_length + "░" * (8 - bar_length)
+                            else:
+                                conf_pct = int(max_strength * 100)
+                                if max_strength >= threshold * 0.8:
+                                    signal_icon = "🟡"
+                                elif max_strength >= threshold * 0.6:
+                                    signal_icon = "🟠"
+                                else:
+                                    signal_icon = "⚪"
+                                signal_text = f"CONF {conf_pct}%"
+                                bar_length = min(int((max_strength / threshold * 8)), 8)
+                                signal_bar = "▌" * bar_length + "░" * (8 - bar_length)
+                            
+                            # Compact card format
+                            card = (
+                                f"┌─ <b>{symbol}</b> ────────────\n"
+                                f"│ 💰{price_str} {ema_color}{ema_icon} {ema_text} {rsi_icon}RSI:{rsi:.0f} {vol_icon}VOL:{vol_ratio:.2f}x\n"
+                                f"│ {signal_icon} {signal_text} {signal_bar}\n"
+                                f"└────────────────────────────"
+                            )
+                            
+                            # Store with confidence for sorting
+                            coin_data_list.append({
+                                'confidence': max_strength,
+                                'symbol': symbol,
+                                'card': card
+                            })
+                        else:
+                            # Invalid data - put at end with low confidence
+                            card = f"┌─ <b>{symbol}</b> ────────────\n│ ❌ Invalid data\n└────────────────────────────"
+                            coin_data_list.append({
+                                'confidence': -1,
+                                'symbol': symbol,
+                                'card': card
+                            })
+                            
+                    except Exception as e:
+                        # Error - put at end with low confidence
+                        card = f"┌─ <b>{symbol}</b> ────────────\n│ ❌ Error\n└────────────────────────────"
+                        coin_data_list.append({
+                            'confidence': -1,
+                            'symbol': symbol,
+                            'card': card
+                        })
+                
+                # Sort by confidence (highest first)
+                coin_data_list.sort(key=lambda x: x['confidence'], reverse=True)
+                
+                # Add sorted coin cards
+                for coin_data in coin_data_list:
+                    lines.append(coin_data['card'])
+                    lines.append("")
+                
+                lines.append("⏳ <i>Next update in 120 seconds</i>")
+                lines.append("💡 <i>Send /status to refresh</i>")
+                
+                return "\n".join(lines), coin_data_list
+            else:
+                # Plain text format (for logging)
+                lines = []
+                lines.append(f"🔍 Analyzing {len(self.trending_coins)} coins for signals...")
+                lines.append("")
+                lines.append("   ➡️ No signals detected - showing detailed analysis...")
+                lines.append("")
+                lines.append(f"   📅 Current Session: {current_session.upper()}")
+                lines.append("")
+                
+                for symbol in self.trending_coins:
+                    try:
+                        df = self.client.get_kline(symbol, self.interval, limit=200)
+                        df_with_indicators = self.strategy.add_indicators(df)
+                        current = df_with_indicators.iloc[-1]
+                        
+                        session_params = self.strategy.get_session_parameters(current_session)
+                        long_strength, short_strength = self.strategy.calculate_signal_strength(
+                            df_with_indicators, session_params
+                        )
+                        
+                        if not pd.isna(current['ema_fast']) and not pd.isna(current['ema_slow']):
+                            if current['ema_fast'] > current['ema_medium'] > current['ema_slow']:
+                                ema_trend = "BULLISH"
+                            elif current['ema_fast'] < current['ema_medium'] < current['ema_slow']:
+                                ema_trend = "BEARISH"
+                            else:
+                                ema_trend = "MIXED"
+                            
+                            max_strength = max(long_strength, short_strength)
+                            status_line = f"   {symbol}: ${current['close']:.2f} | EMA:{ema_trend} | RSI:{current['rsi']:.1f} | VOL:{current['volume_ratio']:.2f}x [MAX:{max_strength:.2f}⚪]"
+                            lines.append(status_line)
+                        else:
+                            lines.append(f"   {symbol}: Error - Invalid data")
+                            
+                    except Exception as e:
+                        lines.append(f"   {symbol}: Error - {e}")
+                
+                lines.append("")
+                lines.append("⏳ Waiting 120 seconds before next check...")
+                
+                return "\n".join(lines)
+            
+        except Exception as e:
+            if html_format:
+                return f"❌ Error generating status report: {e}", []
+            return f"❌ Error generating status report: {e}"
+    
+    def get_coin_detail_report(self, symbol: str):
+        """
+        Get detailed analysis report for a specific coin with chart.
+        
+        Args:
+            symbol: Trading pair symbol
+        
+        Returns:
+            Tuple of (detail_message, chart_path)
+        """
+        try:
+            # Get kline data
+            df = self.client.get_kline(symbol, self.interval, limit=200)
+            df_with_indicators = self.strategy.add_indicators(df)
+            current = df_with_indicators.iloc[-1]
+            
+            # Get current session
+            current_session = self.strategy.get_session()
+            session_params = self.strategy.get_session_parameters(current_session)
+            
+            # Calculate signal strengths
+            long_strength, short_strength = self.strategy.calculate_signal_strength(
+                df_with_indicators, session_params
+            )
+            
+            if pd.isna(current['ema_fast']) or pd.isna(current['ema_slow']):
+                return "❌ Invalid data for this coin", None
+            
+            # Format price
+            price = current['close']
+            if price >= 1000:
+                price_str = f"${price:,.0f}"
+            elif price >= 1:
+                price_str = f"${price:.2f}"
+            else:
+                price_str = f"${price:.4f}"
+            
+            # EMA trend
+            if current['ema_fast'] > current['ema_medium'] > current['ema_slow']:
+                ema_text = "🟢 📈 BULLISH"
+            elif current['ema_fast'] < current['ema_medium'] < current['ema_slow']:
+                ema_text = "🔴 📉 BEARISH"
+            else:
+                ema_text = "⚪ ➡️ MIXED"
+            
+            # RSI
+            rsi = current['rsi']
+            if rsi > 70:
+                rsi_status = "🔴 Overbought"
+            elif rsi < 30:
+                rsi_status = "🟢 Oversold"
+            else:
+                rsi_status = "⚪ Neutral"
+            
+            # Volume
+            vol_ratio = current['volume_ratio']
+            if vol_ratio > 1.5:
+                vol_status = "🔥 High"
+            elif vol_ratio < 0.5:
+                vol_status = "💤 Low"
+            else:
+                vol_status = "📊 Normal"
+            
+            # Signal
+            max_strength = max(long_strength, short_strength)
+            threshold = self.strategy.signal_threshold
+            
+            if long_strength > threshold:
+                signal_text = f"🚀 LONG {int(long_strength*100)}%"
+            elif short_strength > threshold:
+                signal_text = f"⬇️ SHORT {int(short_strength*100)}%"
+            else:
+                conf_pct = int(max_strength * 100)
+                if max_strength >= threshold * 0.8:
+                    signal_text = f"🟡 CONF {conf_pct}%"
+                elif max_strength >= threshold * 0.6:
+                    signal_text = f"🟠 CONF {conf_pct}%"
+                else:
+                    signal_text = f"⚪ CONF {conf_pct}%"
+            
+            # Generate detail message
+            lines = []
+            lines.append(f"╔═══════════════════════════════╗")
+            lines.append(f"║  📊 <b>{symbol} DETAIL</b>  ║")
+            lines.append(f"╚═══════════════════════════════╝")
+            lines.append("")
+            lines.append(f"💰 <b>Price:</b> <code>{price_str}</code>")
+            lines.append(f"{ema_text}")
+            lines.append(f"")
+            lines.append(f"📈 <b>Indicators:</b>")
+            lines.append(f"  • RSI: <code>{rsi:.1f}</code> {rsi_status}")
+            lines.append(f"  • Volume Ratio: <code>{vol_ratio:.2f}x</code> {vol_status}")
+            lines.append(f"  • EMA Fast: <code>${current['ema_fast']:.2f}</code>")
+            lines.append(f"  • EMA Medium: <code>${current['ema_medium']:.2f}</code>")
+            lines.append(f"  • EMA Slow: <code>${current['ema_slow']:.2f}</code>")
+            if 'bb_upper' in current and not pd.isna(current['bb_upper']):
+                lines.append(f"  • BB Upper: <code>${current['bb_upper']:.2f}</code>")
+                lines.append(f"  • BB Lower: <code>${current['bb_lower']:.2f}</code>")
+            lines.append("")
+            lines.append(f"🎯 <b>Signal Analysis:</b>")
+            lines.append(f"  • {signal_text}")
+            lines.append(f"  • Long Strength: <code>{int(long_strength*100)}%</code>")
+            lines.append(f"  • Short Strength: <code>{int(short_strength*100)}%</code>")
+            lines.append(f"  • Session: <code>{current_session.upper()}</code>")
+            lines.append("")
+            lines.append("📊 <i>Chart analysis attached below</i>")
+            
+            detail_message = "\n".join(lines)
+            
+            # Generate chart
+            chart_path = self.chart_generator.generate_analysis_chart(
+                df_with_indicators, symbol, price,
+                current['ema_fast'], current['ema_medium'], current['ema_slow'],
+                rsi, current.get('bb_upper', 0), current.get('bb_middle', 0),
+                current.get('bb_lower', 0), long_strength, short_strength,
+                current_session
+            )
+            
+            return detail_message, chart_path
+            
+        except Exception as e:
+            return f"❌ Error getting detail for {symbol}: {str(e)}", None
     
     def close_position_coin(self, symbol: str, reason: str, exit_price: float):
         """Close position for a specific coin."""
@@ -486,6 +830,9 @@ class TradingBot:
         # Check for existing positions
         self.check_existing_positions()
         
+        # Start Telegram command handler
+        self.command_handler.start()
+        
         print("🔄 Entering main trading loop...", flush=True)
         print(f"📊 Analyzing {len(self.trending_coins)} coins in parallel", flush=True)
         
@@ -577,6 +924,9 @@ class TradingBot:
                 traceback.print_exc()
                 self.notifier.send_error_sync(f"Error in main loop: {e}")
                 time.sleep(60)
+        
+        # Stop command handler
+        self.command_handler.stop()
 
 
 def main():
