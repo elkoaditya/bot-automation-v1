@@ -450,7 +450,7 @@ class TradingBot:
                     lines.append(coin_data['card'])
                     lines.append("")
                 
-                lines.append("⏳ <i>Next update in 120 seconds</i>")
+                lines.append("🔄 <i>Continuous monitoring active</i>")
                 lines.append("💡 <i>Send /status to refresh</i>")
                 
                 return "\n".join(lines), coin_data_list
@@ -493,7 +493,7 @@ class TradingBot:
                         lines.append(f"   {symbol}: Error - {e}")
                 
                 lines.append("")
-                lines.append("⏳ Waiting 120 seconds before next check...")
+                lines.append("🔄 Continuous monitoring - next check starting immediately...")
                 
                 return "\n".join(lines)
             
@@ -911,10 +911,8 @@ class TradingBot:
                         except Exception as e:
                             print(f"   {symbol}: Error - {e}", flush=True)
                 
-                # Wait before next iteration
-                sleep_time = 120  # 2 minutes between checks
-                print(f"⏳ Waiting {sleep_time} seconds before next check...", flush=True)
-                time.sleep(sleep_time)
+                # Continue immediately to next iteration (no delay)
+                print(f"✓ Analysis cycle completed, starting next cycle...", flush=True)
                 
             except KeyboardInterrupt:
                 print("\n⚠️ Bot stopped by user", flush=True)
