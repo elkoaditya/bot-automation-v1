@@ -249,6 +249,47 @@ class TradingBot:
             pos_data = self.positions[symbol]
         
         try:
+            # First, check if position still exists on exchange
+            # This handles the case where position was closed by TP/SL on exchange
+            positions = self.client.get_positions(symbol)
+            if not positions or float(positions[0].get('size', 0)) == 0:
+                # Position already closed (likely by TP/SL on exchange)
+                print(f"Position {symbol} already closed on exchange, cleaning up...", flush=True)
+                # Get current price for notification
+                try:
+                    current_price = self.client.get_current_price(symbol)
+                    entry_price = pos_data['entry_price']
+                    side = pos_data['side']
+                    tp_price = pos_data['tp_price']
+                    sl_price = pos_data['sl_price']
+                    
+                    # Determine reason based on last known price vs TP/SL
+                    if side == 'Buy':
+                        if current_price <= sl_price:
+                            reason = "Stop Loss hit (auto-closed)"
+                        elif current_price >= tp_price:
+                            reason = "Take Profit hit (auto-closed)"
+                        else:
+                            reason = "Position closed (unknown reason)"
+                    else:  # Sell
+                        if current_price >= sl_price:
+                            reason = "Stop Loss hit (auto-closed)"
+                        elif current_price <= tp_price:
+                            reason = "Take Profit hit (auto-closed)"
+                        else:
+                            reason = "Position closed (unknown reason)"
+                    
+                    # Clean up and notify
+                    self.close_position_coin(symbol, reason, current_price, already_closed=True)
+                except Exception as e:
+                    print(f"✗ Error handling already-closed position {symbol}: {e}", flush=True)
+                    # Still clean up internal state
+                    with self.positions_lock:
+                        if symbol in self.positions:
+                            del self.positions[symbol]
+                return
+            
+            # Position still exists, check TP/SL
             current_price = self.client.get_current_price(symbol)
             entry_price = pos_data['entry_price']
             side = pos_data['side']  # Already in "Buy"/"Sell" format
@@ -625,7 +666,7 @@ class TradingBot:
         except Exception as e:
             return f"❌ Error getting detail for {symbol}: {str(e)}", None
     
-    def close_position_coin(self, symbol: str, reason: str, exit_price: float):
+    def close_position_coin(self, symbol: str, reason: str, exit_price: float, already_closed: bool = False):
         """Close position for a specific coin."""
         with self.positions_lock:
             if symbol not in self.positions:
@@ -636,21 +677,62 @@ class TradingBot:
             side = pos_data['side']
             tp_price = pos_data['tp_price']
             sl_price = pos_data['sl_price']
-            position = pos_data['position']
+            position = pos_data.get('position', {})
         
         try:
             print(f"Closing position {symbol}: {reason}", flush=True)
             
-            # Close position on exchange
-            self.client.close_position(symbol, side)
+            # Only try to close on exchange if not already closed
+            if not already_closed:
+                try:
+                    # Check if position still exists before closing
+                    positions = self.client.get_positions(symbol)
+                    if positions and float(positions[0].get('size', 0)) != 0:
+                        # Close position on exchange
+                        self.client.close_position(symbol, side)
+                    else:
+                        # Position already closed, mark as already_closed
+                        already_closed = True
+                        print(f"Position {symbol} already closed on exchange", flush=True)
+                except Exception as e:
+                    # If close fails, check if it's because position doesn't exist
+                    error_msg = str(e).lower()
+                    if "no open position" in error_msg or "position size is zero" in error_msg:
+                        already_closed = True
+                        print(f"Position {symbol} already closed: {e}", flush=True)
+                    else:
+                        # Re-raise if it's a different error
+                        raise
+            
+            # Get position size for PnL calculation
+            position_size = 0
+            if position and 'size' in position:
+                position_size = abs(float(position.get('size', 0)))
+            elif not already_closed:
+                # Try to get from exchange if still available
+                try:
+                    positions = self.client.get_positions(symbol)
+                    if positions:
+                        position_size = abs(float(positions[0].get('size', 0)))
+                except:
+                    pass
             
             # Calculate PnL
-            if side == 'Buy':
-                pnl = (exit_price - entry_price) * abs(float(position.get('size', 0)))
-                pnl_percent = ((exit_price - entry_price) / entry_price) * 100
-            else:  # Sell
-                pnl = (entry_price - exit_price) * abs(float(position.get('size', 0)))
-                pnl_percent = ((entry_price - exit_price) / entry_price) * 100
+            if position_size > 0:
+                if side == 'Buy':
+                    pnl = (exit_price - entry_price) * position_size
+                    pnl_percent = ((exit_price - entry_price) / entry_price) * 100
+                else:  # Sell
+                    pnl = (entry_price - exit_price) * position_size
+                    pnl_percent = ((entry_price - exit_price) / entry_price) * 100
+            else:
+                # Fallback: calculate PnL percentage only
+                if side == 'Buy':
+                    pnl_percent = ((exit_price - entry_price) / entry_price) * 100
+                    pnl = 0  # Cannot calculate without size
+                else:  # Sell
+                    pnl_percent = ((entry_price - exit_price) / entry_price) * 100
+                    pnl = 0  # Cannot calculate without size
             
             # Get chart data
             df = self.client.get_kline(symbol, self.interval, limit=200)
@@ -677,6 +759,13 @@ class TradingBot:
             
         except Exception as e:
             print(f"✗ Error closing position {symbol}: {e}", flush=True)
+            # Still try to clean up internal state
+            try:
+                with self.positions_lock:
+                    if symbol in self.positions:
+                        del self.positions[symbol]
+            except:
+                pass
             self.notifier.send_error_sync(f"Error closing position {symbol}: {e}")
     
     def execute_trade_coin(self, signal_data: dict):
