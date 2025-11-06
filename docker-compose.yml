@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  trading-bot:
+    build: .
+    container_name: bybit-trading-bot
+    env_file:
+      - .env
+    volumes:
+      - ./:/app
+    restart: unless-stopped
+    networks:
+      - trading-network
+
+networks:
+  trading-network:
+    driver: bridge
+
