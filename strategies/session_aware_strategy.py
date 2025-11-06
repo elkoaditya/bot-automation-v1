@@ -94,14 +94,16 @@ class SessionAwareStrategy:
             'asian', 'european', or 'us'
         """
         if timestamp is None:
-            timestamp = pd.Timestamp.utcnow()
+            # Use now() with UTC timezone instead of deprecated utcnow()
+            timestamp = pd.Timestamp.now(tz='UTC')
         
         # Convert to UTC if not already
         if timestamp.tz is not None:
             timestamp = timestamp.tz_convert('UTC')
         else:
-            # Assume UTC if no timezone info
-            pass
+            # Timestamp tanpa timezone dianggap UTC (Bybit mengembalikan UTC)
+            # Localize ke UTC untuk memastikan konsistensi
+            timestamp = timestamp.tz_localize('UTC')
         
         hour = timestamp.hour
         
