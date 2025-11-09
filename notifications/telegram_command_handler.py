@@ -122,11 +122,75 @@ class TelegramCommandHandler:
 🤖 <b>Trading Bot Commands</b>
 
 /status - Get current trading status and coin analysis
+/myporto - Show portfolio and PnL information
 /start - Show this help message
 
 Bot is running and monitoring the market.
 """
         await update.message.reply_text(welcome_msg, parse_mode='HTML')
+    
+    async def myporto_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /myporto command."""
+        # Check if message is from authorized chat
+        if str(update.effective_chat.id) != str(self.chat_id):
+            await update.message.reply_text("❌ Unauthorized access.")
+            return
+        
+        try:
+            # Show typing indicator
+            await context.bot.send_chat_action(
+                chat_id=update.effective_chat.id,
+                action='typing'
+            )
+            
+            # Send initial message
+            processing_msg = await update.message.reply_text(
+                "⏳ Generating portfolio report... Please wait.",
+                parse_mode='HTML'
+            )
+            
+            # Run portfolio report generation in executor to prevent blocking
+            import asyncio
+            loop = asyncio.get_event_loop()
+            
+            # Run blocking operations in executor with timeout (60 seconds)
+            try:
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None,
+                        self.trading_bot.get_portfolio_report,
+                        True  # html_format=True
+                    ),
+                    timeout=60.0
+                )
+            except asyncio.TimeoutError:
+                await processing_msg.edit_text(
+                    "⏱️ <b>Timeout</b>\n\nPortfolio report generation took too long. Please try again later.",
+                    parse_mode='HTML'
+                )
+                return
+            
+            # Delete processing message and send portfolio report
+            try:
+                await processing_msg.delete()
+            except:
+                pass
+            
+            # Send portfolio report with HTML formatting
+            await update.message.reply_text(
+                result,
+                parse_mode='HTML'
+            )
+            
+        except Exception as e:
+            import traceback
+            error_msg = f"❌ <b>Error getting portfolio:</b>\n<code>{str(e)[:200]}</code>"
+            try:
+                await update.message.reply_text(error_msg, parse_mode='HTML')
+            except:
+                pass
+            print(f"Error in myporto_command: {e}", flush=True)
+            traceback.print_exc()
     
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle button callback queries."""
@@ -237,6 +301,7 @@ Bot is running and monitoring the market.
             # Add command handlers
             self.application.add_handler(CommandHandler("start", self.start_command))
             self.application.add_handler(CommandHandler("status", self.status_command))
+            self.application.add_handler(CommandHandler("myporto", self.myporto_command))
             
             # Add callback query handler for buttons
             self.application.add_handler(CallbackQueryHandler(self.button_callback))

@@ -671,6 +671,186 @@ class TradingBot:
         except Exception as e:
             return f"❌ Error getting detail for {symbol}: {str(e)}", None
     
+    def get_portfolio_report(self, html_format=True):
+        """
+        Generate portfolio report with PnL information.
+        
+        Args:
+            html_format: If True, return HTML formatted message (default: True)
+        
+        Returns:
+            String containing formatted portfolio report
+        """
+        try:
+            # Get wallet balance
+            balance_info = self.client.get_wallet_balance()
+            account_info = balance_info.get('list', [{}])[0]
+            
+            # Extract balance information
+            total_equity = float(account_info.get('totalEquity', 0))
+            total_wallet_balance = float(account_info.get('totalWalletBalance', 0))
+            available_balance = float(account_info.get('availableBalance', 0))
+            unrealized_pnl = float(account_info.get('totalUnrealisedPnl', 0))
+            
+            # Fallback to coin walletBalance if totalEquity is 0
+            if total_equity == 0 and 'coin' in account_info and len(account_info['coin']) > 0:
+                coin_info = account_info['coin'][0]
+                total_equity = float(coin_info.get('walletBalance', 0))
+                total_wallet_balance = total_equity
+                available_balance = float(coin_info.get('availableToWithdraw', 0))
+            
+            # Get all positions from exchange
+            all_positions = self.client.get_positions()
+            open_positions = [p for p in all_positions if float(p.get('size', 0)) != 0]
+            
+            # Calculate PnL for each position
+            position_details = []
+            total_unrealized_pnl = 0.0
+            
+            with self.positions_lock:
+                tracked_symbols = list(self.positions.keys())
+            
+            for pos in open_positions:
+                symbol = pos.get('symbol', '')
+                size = float(pos.get('size', 0))
+                entry_price = float(pos.get('avgPrice', 0))
+                side = 'Buy' if size > 0 else 'Sell'
+                leverage = float(pos.get('leverage', 1))
+                
+                # Get current price
+                try:
+                    current_price = self.client.get_current_price(symbol)
+                except:
+                    current_price = entry_price
+                
+                # Calculate unrealized PnL
+                if side == 'Buy':
+                    pnl = (current_price - entry_price) * abs(size)
+                    pnl_percent = ((current_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
+                else:  # Sell
+                    pnl = (entry_price - current_price) * abs(size)
+                    pnl_percent = ((entry_price - current_price) / entry_price) * 100 if entry_price > 0 else 0
+                
+                total_unrealized_pnl += pnl
+                
+                # Get TP/SL from tracked positions if available
+                tp_price = None
+                sl_price = None
+                with self.positions_lock:
+                    if symbol in self.positions:
+                        tp_price = self.positions[symbol].get('tp_price')
+                        sl_price = self.positions[symbol].get('sl_price')
+                
+                position_details.append({
+                    'symbol': symbol,
+                    'side': side,
+                    'size': abs(size),
+                    'entry_price': entry_price,
+                    'current_price': current_price,
+                    'pnl': pnl,
+                    'pnl_percent': pnl_percent,
+                    'leverage': leverage,
+                    'tp_price': tp_price,
+                    'sl_price': sl_price
+                })
+            
+            # Use unrealized PnL from API if available, otherwise use calculated
+            if unrealized_pnl != 0:
+                total_unrealized_pnl = unrealized_pnl
+            
+            # Calculate realized PnL (approximate: total equity - wallet balance - unrealized)
+            realized_pnl = total_equity - total_wallet_balance - total_unrealized_pnl
+            
+            # Format message
+            if html_format:
+                lines = []
+                lines.append("╔═══════════════════════════╗")
+                lines.append(f"║ 💼 <b>MY PORTFOLIO</b> ║")
+                lines.append("╚═══════════════════════════╝")
+                lines.append("")
+                
+                # Balance summary
+                lines.append("💰 <b>Balance Summary:</b>")
+                lines.append(f"  • Total Equity: <code>${total_equity:,.2f}</code>")
+                lines.append(f"  • Wallet Balance: <code>${total_wallet_balance:,.2f}</code>")
+                lines.append(f"  • Available: <code>${available_balance:,.2f}</code>")
+                lines.append("")
+                
+                # PnL summary
+                pnl_sign = '+' if total_unrealized_pnl >= 0 else ''
+                pnl_emoji = '✅' if total_unrealized_pnl >= 0 else '❌'
+                lines.append(f"📊 <b>PnL Summary:</b>")
+                lines.append(f"  • Unrealized PnL: {pnl_emoji} <code>{pnl_sign}${total_unrealized_pnl:,.2f}</code>")
+                if realized_pnl != 0:
+                    realized_sign = '+' if realized_pnl >= 0 else ''
+                    realized_emoji = '✅' if realized_pnl >= 0 else '❌'
+                    lines.append(f"  • Realized PnL: {realized_emoji} <code>{realized_sign}${realized_pnl:,.2f}</code>")
+                lines.append("")
+                
+                # Positions
+                if position_details:
+                    lines.append(f"📈 <b>Open Positions ({len(position_details)}):</b>")
+                    for pos in position_details:
+                        pnl_sign = '+' if pos['pnl'] >= 0 else ''
+                        pnl_emoji = '✅' if pos['pnl'] >= 0 else '❌'
+                        side_emoji = '🟢' if pos['side'] == 'Buy' else '🔴'
+                        
+                        # Format price
+                        if pos['current_price'] >= 1000:
+                            price_str = f"${pos['current_price']:,.0f}"
+                            entry_str = f"${pos['entry_price']:,.0f}"
+                        elif pos['current_price'] >= 1:
+                            price_str = f"${pos['current_price']:.2f}"
+                            entry_str = f"${pos['entry_price']:.2f}"
+                        else:
+                            price_str = f"${pos['current_price']:.4f}"
+                            entry_str = f"${pos['entry_price']:.4f}"
+                        
+                        lines.append(f"")
+                        lines.append(f"┌─ <b>{pos['symbol']}</b> {side_emoji} {pos['side']} ────")
+                        lines.append(f"│ Size: <code>{pos['size']:.4f}</code> • Leverage: <code>{pos['leverage']}x</code>")
+                        lines.append(f"│ Entry: <code>{entry_str}</code>")
+                        lines.append(f"│ Current: <code>{price_str}</code>")
+                        lines.append(f"│ PnL: {pnl_emoji} <code>{pnl_sign}${pos['pnl']:,.2f}</code> ({pnl_sign}{pos['pnl_percent']:.2f}%)")
+                        if pos['tp_price'] and pos['sl_price']:
+                            tp_str = f"${pos['tp_price']:.2f}" if pos['tp_price'] >= 1 else f"${pos['tp_price']:.4f}"
+                            sl_str = f"${pos['sl_price']:.2f}" if pos['sl_price'] >= 1 else f"${pos['sl_price']:.4f}"
+                            lines.append(f"│ TP: <code>{tp_str}</code> • SL: <code>{sl_str}</code>")
+                        lines.append(f"└────────────────────────────")
+                else:
+                    lines.append("📈 <b>Open Positions:</b>")
+                    lines.append("  • No open positions")
+                
+                return "\n".join(lines)
+            else:
+                # Plain text format
+                lines = []
+                lines.append("💼 MY PORTFOLIO")
+                lines.append("")
+                lines.append(f"Total Equity: ${total_equity:,.2f}")
+                lines.append(f"Wallet Balance: ${total_wallet_balance:,.2f}")
+                lines.append(f"Available: ${available_balance:,.2f}")
+                lines.append("")
+                pnl_sign = '+' if total_unrealized_pnl >= 0 else ''
+                lines.append(f"Unrealized PnL: {pnl_sign}${total_unrealized_pnl:,.2f}")
+                lines.append("")
+                if position_details:
+                    lines.append(f"Open Positions ({len(position_details)}):")
+                    for pos in position_details:
+                        pnl_sign = '+' if pos['pnl'] >= 0 else ''
+                        lines.append(f"  {pos['symbol']} {pos['side']}: Entry ${pos['entry_price']:.2f}, Current ${pos['current_price']:.2f}, PnL {pnl_sign}${pos['pnl']:,.2f} ({pnl_sign}{pos['pnl_percent']:.2f}%)")
+                else:
+                    lines.append("No open positions")
+                
+                return "\n".join(lines)
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            if html_format:
+                return f"❌ <b>Error getting portfolio:</b>\n<code>{str(e)[:200]}</code>"
+            return f"❌ Error getting portfolio: {str(e)}"
+    
     def close_position_coin(self, symbol: str, reason: str, exit_price: float, already_closed: bool = False):
         """Close position for a specific coin."""
         with self.positions_lock:

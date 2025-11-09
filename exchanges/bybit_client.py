@@ -357,6 +357,9 @@ class BybitClient:
             params = {"category": "linear"}
             if symbol:
                 params["symbol"] = symbol
+            else:
+                # When no symbol is provided, Bybit requires settleCoin parameter
+                params["settleCoin"] = "USDT"
             
             response = self._make_request("GET", "/v5/position/list", params)
             
