@@ -3,6 +3,7 @@ from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import TelegramError
 import asyncio
 import os
+import time
 from config import Config
 
 
@@ -13,6 +14,10 @@ class TelegramNotifier:
         """Initialize Telegram bot."""
         self.bot = Bot(token=Config.TELEGRAM_BOT_TOKEN)
         self.chat_id = Config.TELEGRAM_CHAT_ID
+        # Rate limiting untuk error notifications
+        # Format: {error_key: last_sent_timestamp}
+        self.error_notifications = {}
+        self.error_cooldown_seconds = 600  # 10 menit cooldown untuk error yang sama
     
     def _run_async(self, coro):
         """Run async function in a new event loop."""
@@ -156,8 +161,31 @@ Please check the bot logs for more details.
             print(f"Failed to send Telegram exit notification: {e}", flush=True)
     
     def send_error_sync(self, error_message: str):
-        """Synchronous wrapper for error notification."""
+        """Synchronous wrapper for error notification with rate limiting."""
         try:
+            # Create error key untuk deduplication (ambil 100 karakter pertama)
+            error_key = error_message[:100] if len(error_message) > 100 else error_message
+            
+            # Check rate limiting
+            current_time = time.time()
+            last_sent = self.error_notifications.get(error_key, 0)
+            
+            if current_time - last_sent < self.error_cooldown_seconds:
+                # Masih dalam cooldown, skip notifikasi
+                remaining_time = int(self.error_cooldown_seconds - (current_time - last_sent))
+                print(f"⚠️ Error notification suppressed (cooldown: {remaining_time}s): {error_key[:50]}...", flush=True)
+                return
+            
+            # Update timestamp dan kirim notifikasi
+            self.error_notifications[error_key] = current_time
+            
+            # Cleanup old entries (lebih dari 1 jam)
+            cutoff_time = current_time - 3600
+            self.error_notifications = {
+                k: v for k, v in self.error_notifications.items() 
+                if v > cutoff_time
+            }
+            
             self._run_async(self.notify_error(error_message))
         except Exception as e:
             print(f"Failed to send Telegram error notification: {e}", flush=True)

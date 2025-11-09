@@ -100,6 +100,11 @@ class TradingBot:
         self.positions = {}  # {symbol: position_data}
         self.positions_lock = threading.Lock()  # Thread-safe access to positions
         
+        # Cooldown untuk symbol yang gagal order
+        # Format: {symbol: last_failed_timestamp}
+        self.failed_order_cooldown = {}
+        self.failed_order_cooldown_seconds = 1800  # 30 menit cooldown untuk symbol yang gagal order
+        
         print(f"✓ Bot initialized", flush=True)
         print(f"  Leverage: {self.leverage}x", flush=True)
         print(f"  Interval: {self.interval}m", flush=True)
@@ -783,6 +788,14 @@ class TradingBot:
                 print(f"Already have position for {symbol}, skipping entry", flush=True)
                 return
         
+        # Check cooldown untuk symbol yang gagal order sebelumnya
+        current_time = time.time()
+        last_failed = self.failed_order_cooldown.get(symbol, 0)
+        if current_time - last_failed < self.failed_order_cooldown_seconds:
+            remaining_time = int(self.failed_order_cooldown_seconds - (current_time - last_failed))
+            print(f"⏸️ {symbol} masih dalam cooldown ({remaining_time}s), skipping order", flush=True)
+            return
+        
         try:
             # Get minimum order size and minimum order value for this symbol
             min_qty, qty_step, min_order_value = self.client.get_minimum_order_size(symbol)
@@ -926,6 +939,18 @@ class TradingBot:
             
         except Exception as e:
             print(f"✗ Error executing trade for {symbol}: {e}", flush=True)
+            
+            # Tambahkan symbol ke cooldown list
+            self.failed_order_cooldown[symbol] = time.time()
+            
+            # Cleanup old entries (lebih dari 1 jam)
+            cutoff_time = time.time() - 3600
+            self.failed_order_cooldown = {
+                k: v for k, v in self.failed_order_cooldown.items() 
+                if v > cutoff_time
+            }
+            
+            # Kirim notifikasi error (dengan rate limiting)
             self.notifier.send_error_sync(f"Error executing trade for {symbol}: {e}")
     
     
