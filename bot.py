@@ -790,12 +790,37 @@ class TradingBot:
             # Calculate position size
             balance_info = self.client.get_wallet_balance()
             try:
-                available_balance = float(balance_info['list'][0]['coin'][0]['availableToWithdraw'])
-                # Use configured percentage per position (matches backtest: 20%)
-                position_value = available_balance * Config.POSITION_SIZE_PCT * self.leverage
-                calculated_qty = position_value / entry_price
-            except:
+                # Use total equity (total portfolio value) instead of available balance
+                # This includes balance + unrealized PnL from open positions
+                account_info = balance_info['list'][0]
+                
+                # Try to get totalEquity first (most accurate - includes unrealized PnL)
+                total_equity = float(account_info.get('totalEquity', 0))
+                
+                # Fallback to totalWalletBalance if totalEquity not available
+                if total_equity == 0:
+                    total_equity = float(account_info.get('totalWalletBalance', 0))
+                
+                # Fallback to coin walletBalance if still 0
+                if total_equity == 0 and 'coin' in account_info and len(account_info['coin']) > 0:
+                    coin_info = account_info['coin'][0]
+                    total_equity = float(coin_info.get('walletBalance', 0))
+                
+                # Final fallback to availableToWithdraw
+                if total_equity == 0 and 'coin' in account_info and len(account_info['coin']) > 0:
+                    coin_info = account_info['coin'][0]
+                    total_equity = float(coin_info.get('availableToWithdraw', 0))
+                
+                # Use 20% of total portfolio value per position
+                if total_equity > 0:
+                    position_value = total_equity * Config.POSITION_SIZE_PCT * self.leverage
+                    calculated_qty = position_value / entry_price
+                else:
+                    # If all fallbacks fail, use minimum order value
+                    raise ValueError("Could not determine portfolio value")
+            except Exception as e:
                 # Fallback: calculate based on minimum order value
+                print(f"   Warning: Could not get portfolio value, using minimum order size: {e}", flush=True)
                 calculated_qty = min_order_value / entry_price
             
             # Ensure order value meets minimum (quantity * price >= min_order_value)
