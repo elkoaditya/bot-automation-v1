@@ -426,18 +426,48 @@ class BybitClient:
             if position_size == 0:
                 raise Exception("Position size is zero")
             
+            # Get qtyStep for proper quantity formatting
+            try:
+                _, qty_step, _ = self.get_minimum_order_size(symbol)
+            except:
+                qty_step = 0.001  # Default fallback
+            
+            # Format quantity according to qtyStep
+            abs_size = abs(position_size)
+            # Round to nearest qty_step
+            if qty_step > 0:
+                rounded_qty = round(abs_size / qty_step) * qty_step
+            else:
+                rounded_qty = abs_size
+            
+            # Format quantity string based on qty_step precision
+            if qty_step >= 1:
+                qty = str(int(rounded_qty))
+            elif qty_step >= 0.1:
+                qty = f"{rounded_qty:.1f}".rstrip('0').rstrip('.')
+            elif qty_step >= 0.01:
+                qty = f"{rounded_qty:.2f}".rstrip('0').rstrip('.')
+            elif qty_step >= 0.001:
+                qty = f"{rounded_qty:.3f}".rstrip('0').rstrip('.')
+            else:
+                # For very small steps, use up to 8 decimals
+                qty = f"{rounded_qty:.8f}".rstrip('0').rstrip('.')
+            
             # Determine opposite side
             if position_size > 0:
                 # Long position, need to sell
                 close_side = "Sell"
-                qty = str(abs(position_size))
             else:
                 # Short position, need to buy
                 close_side = "Buy"
-                qty = str(abs(position_size))
             
-            # Override with provided side if available
+            # Validate provided side if given (must be opposite of position)
             if side:
+                # Validate that provided side is correct for closing
+                if position_size > 0 and side != "Sell":
+                    raise Exception(f"Invalid side '{side}' for closing long position. Must be 'Sell'")
+                elif position_size < 0 and side != "Buy":
+                    raise Exception(f"Invalid side '{side}' for closing short position. Must be 'Buy'")
                 close_side = side
             
             # Place market order to close (reduceOnly=True ensures we're closing, not opening)

@@ -7,6 +7,7 @@ import traceback
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
+import requests
 
 # Force unbuffered output for Docker (redundant if using -u flag, but helps)
 import os
@@ -671,6 +672,26 @@ class TradingBot:
         except Exception as e:
             return f"❌ Error getting detail for {symbol}: {str(e)}", None
     
+    def get_usd_idr_rate(self):
+        """
+        Get USD to IDR exchange rate from exchangerate-api.com
+        
+        Returns:
+            float: USD/IDR exchange rate, or 15000 as fallback
+        """
+        try:
+            # Try using exchangerate-api.com (free tier)
+            response = requests.get('https://api.exchangerate-api.com/v4/latest/USD', timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                rate = data.get('rates', {}).get('IDR', 15000)
+                return float(rate)
+        except Exception as e:
+            print(f"Warning: Could not fetch USD/IDR rate: {e}", flush=True)
+        
+        # Fallback to fixed rate if API fails
+        return 15000.0
+    
     def get_portfolio_report(self, html_format=True):
         """
         Generate portfolio report with PnL information.
@@ -761,6 +782,13 @@ class TradingBot:
             # Calculate realized PnL (approximate: total equity - wallet balance - unrealized)
             realized_pnl = total_equity - total_wallet_balance - total_unrealized_pnl
             
+            # Get USD/IDR exchange rate
+            usd_idr_rate = self.get_usd_idr_rate()
+            
+            # Calculate PnL in IDR
+            total_unrealized_pnl_idr = total_unrealized_pnl * usd_idr_rate
+            realized_pnl_idr = realized_pnl * usd_idr_rate
+            
             # Format message
             if html_format:
                 lines = []
@@ -780,11 +808,11 @@ class TradingBot:
                 pnl_sign = '+' if total_unrealized_pnl >= 0 else ''
                 pnl_emoji = '✅' if total_unrealized_pnl >= 0 else '❌'
                 lines.append(f"📊 <b>PnL Summary:</b>")
-                lines.append(f"  • Unrealized PnL: {pnl_emoji} <code>{pnl_sign}${total_unrealized_pnl:,.2f}</code>")
+                lines.append(f"  • Unrealized PnL: {pnl_emoji} <code>{pnl_sign}${total_unrealized_pnl:,.2f}</code> (<code>{pnl_sign}Rp{total_unrealized_pnl_idr:,.0f}</code>)")
                 if realized_pnl != 0:
                     realized_sign = '+' if realized_pnl >= 0 else ''
                     realized_emoji = '✅' if realized_pnl >= 0 else '❌'
-                    lines.append(f"  • Realized PnL: {realized_emoji} <code>{realized_sign}${realized_pnl:,.2f}</code>")
+                    lines.append(f"  • Realized PnL: {realized_emoji} <code>{realized_sign}${realized_pnl:,.2f}</code> (<code>{realized_sign}Rp{realized_pnl_idr:,.0f}</code>)")
                 lines.append("")
                 
                 # Positions
@@ -806,12 +834,15 @@ class TradingBot:
                             price_str = f"${pos['current_price']:.4f}"
                             entry_str = f"${pos['entry_price']:.4f}"
                         
+                        # Calculate IDR PnL for this position
+                        pos_pnl_idr = pos['pnl'] * usd_idr_rate
+                        
                         lines.append(f"")
                         lines.append(f"┌─ <b>{pos['symbol']}</b> {side_emoji} {pos['side']} ────")
                         lines.append(f"│ Size: <code>{pos['size']:.4f}</code> • Leverage: <code>{pos['leverage']}x</code>")
                         lines.append(f"│ Entry: <code>{entry_str}</code>")
                         lines.append(f"│ Current: <code>{price_str}</code>")
-                        lines.append(f"│ PnL: {pnl_emoji} <code>{pnl_sign}${pos['pnl']:,.2f}</code> ({pnl_sign}{pos['pnl_percent']:.2f}%)")
+                        lines.append(f"│ PnL: {pnl_emoji} <code>{pnl_sign}${pos['pnl']:,.2f}</code> (<code>{pnl_sign}Rp{pos_pnl_idr:,.0f}</code>) ({pnl_sign}{pos['pnl_percent']:.2f}%)")
                         if pos['tp_price'] and pos['sl_price']:
                             tp_str = f"${pos['tp_price']:.2f}" if pos['tp_price'] >= 1 else f"${pos['tp_price']:.4f}"
                             sl_str = f"${pos['sl_price']:.2f}" if pos['sl_price'] >= 1 else f"${pos['sl_price']:.4f}"
@@ -832,13 +863,17 @@ class TradingBot:
                 lines.append(f"Available: ${available_balance:,.2f}")
                 lines.append("")
                 pnl_sign = '+' if total_unrealized_pnl >= 0 else ''
-                lines.append(f"Unrealized PnL: {pnl_sign}${total_unrealized_pnl:,.2f}")
+                lines.append(f"Unrealized PnL: {pnl_sign}${total_unrealized_pnl:,.2f} ({pnl_sign}Rp{total_unrealized_pnl_idr:,.0f})")
+                if realized_pnl != 0:
+                    realized_sign = '+' if realized_pnl >= 0 else ''
+                    lines.append(f"Realized PnL: {realized_sign}${realized_pnl:,.2f} ({realized_sign}Rp{realized_pnl_idr:,.0f})")
                 lines.append("")
                 if position_details:
                     lines.append(f"Open Positions ({len(position_details)}):")
                     for pos in position_details:
                         pnl_sign = '+' if pos['pnl'] >= 0 else ''
-                        lines.append(f"  {pos['symbol']} {pos['side']}: Entry ${pos['entry_price']:.2f}, Current ${pos['current_price']:.2f}, PnL {pnl_sign}${pos['pnl']:,.2f} ({pnl_sign}{pos['pnl_percent']:.2f}%)")
+                        pos_pnl_idr = pos['pnl'] * usd_idr_rate
+                        lines.append(f"  {pos['symbol']} {pos['side']}: Entry ${pos['entry_price']:.2f}, Current ${pos['current_price']:.2f}, PnL {pnl_sign}${pos['pnl']:,.2f} ({pnl_sign}Rp{pos_pnl_idr:,.0f}) ({pnl_sign}{pos['pnl_percent']:.2f}%)")
                 else:
                     lines.append("No open positions")
                 
@@ -873,8 +908,8 @@ class TradingBot:
                     # Check if position still exists before closing
                     positions = self.client.get_positions(symbol)
                     if positions and float(positions[0].get('size', 0)) != 0:
-                        # Close position on exchange
-                        self.client.close_position(symbol, side)
+                        # Close position on exchange (don't pass side - let it determine opposite automatically)
+                        self.client.close_position(symbol)
                     else:
                         # Position already closed, mark as already_closed
                         already_closed = True
